@@ -1,6 +1,7 @@
 """
 Telegram-бот "Нейтральный разбор ситуации"
 Основной файл с логикой бота и обработчиками
+Версия с GigaChat API
 """
 
 import logging
@@ -16,7 +17,7 @@ from telegram.ext import (
 
 from config import Config
 from database import Database
-from claude_api import ClaudeAPI
+from gigachat_api import GigaChatAPI
 from states import States
 from prompts import get_analysis_prompt
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Инициализация
 db = Database()
-claude = ClaudeAPI()
+gigachat = GigaChatAPI()
 
 
 # ============================================================
@@ -67,11 +68,12 @@ async def intro_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if "Что это такое" in text:
         explanation = (
             "📋 Как это работает:\n\n"
-            "1. Я задам тебе несколько вопросов о ситуации\n"
+            "1. Я задам тебе 7 вопросов о ситуации\n"
             "2. Ты ответишь своими словами\n"
-            "3. После всех вопросов - оплата (99₽ или 149₽)\n"
-            "4. Я проанализирую ситуацию нейтрально\n"
-            "5. Ты получишь структурированный разбор\n\n"
+            "3. После всех вопросов - выбор тарифа:\n"
+            "   • 99₽ - разбор для себя\n"
+            "   • 149₽ - разбор + протокол + варианты действий\n"
+            "4. После оплаты - нейтральный анализ\n\n"
             "Весь процесс займет 5-10 минут.\n\n"
             "Начнем?"
         )
@@ -202,19 +204,20 @@ async def summary_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Переход к оплате
     payment_text = (
         "💳 Выбери тариф:\n\n"
-        "🔹 Базовый разбор - 99₽\n"
-        "• Структурированный анализ\n"
-        "• Фиксация фактов\n"
-        "• Возможные варианты действий\n\n"
-        "🔸 Расширенный разбор - 149₽\n"
-        "• Всё из базового\n"
-        "• Более детальный анализ\n"
-        "• Больше вариантов действий\n"
-        "• Анализ рисков\n\n"
+        "🔹 РАЗБОР ДЛЯ СЕБЯ - 99₽\n"
+        "Ты выйдешь с ясной картиной:\n"
+        "• Что произошло (факты vs эмоции)\n"
+        "• Где именно застрял конфликт\n"
+        "• Что не хватает для понимания\n\n"
+        "🔸 ПРОТОКОЛ + ШАГИ - 149₽\n"
+        "Всё из базового тарифа, ПЛЮС:\n"
+        "• Нейтральный текст для передачи другой стороне\n"
+        "• Варианты действий (от мягких к жёстким)\n"
+        "• Карта возможных ходов\n\n"
         "⏳ После оплаты разбор готовится 1-2 минуты."
     )
     
-    keyboard = [["99₽ - Базовый"], ["149₽ - Расширенный"], ["Отменить"]]
+    keyboard = [["99₽ - Разбор для себя"], ["149₽ - Протокол + шаги"], ["Отменить"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
     await update.message.reply_text(payment_text, reply_markup=reply_markup)
@@ -267,12 +270,12 @@ async def payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         price=price
     )
     
-    # Формируем промпт для Claude
+    # Формируем промпт для GigaChat
     prompt = get_analysis_prompt(context.user_data, tariff)
     
-    # Отправляем запрос в Claude
+    # Отправляем запрос в GigaChat
     try:
-        analysis = await claude.get_analysis(prompt)
+        analysis = await gigachat.get_analysis(prompt, tariff)
         
         # Сохраняем результат
         db.save_analysis_result(request_id, analysis)
@@ -377,7 +380,7 @@ def main():
     application.add_handler(CommandHandler('help', help_command))
     
     # Запускаем бота
-    logger.info("Bot started")
+    logger.info("Bot started with GigaChat API")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

@@ -1,6 +1,6 @@
 """
 Конфигурация бота
-Загрузка переменных окружения
+Загрузка переменных окружения для GigaChat API
 """
 
 import os
@@ -16,9 +16,10 @@ class Config:
     # Telegram
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
     
-    # Claude API
-    CLAUDE_API_KEY = os.getenv('CLAUDE_API_KEY')
-    CLAUDE_MODEL = os.getenv('CLAUDE_MODEL', 'claude-sonnet-4-20250514')  # Sonnet 4.5 по умолчанию
+    # GigaChat API
+    GIGACHAT_CLIENT_ID = os.getenv('GIGACHAT_CLIENT_ID')
+    GIGACHAT_CLIENT_SECRET = os.getenv('GIGACHAT_CLIENT_SECRET')
+    GIGACHAT_SCOPE = os.getenv('GIGACHAT_SCOPE', 'GIGACHAT_API_PERS')
     
     # Database
     DATABASE_PATH = os.getenv('DATABASE_PATH', 'database.db')
@@ -35,7 +36,8 @@ class Config:
         """Проверка обязательных переменных"""
         required = [
             ('TELEGRAM_TOKEN', cls.TELEGRAM_TOKEN),
-            ('CLAUDE_API_KEY', cls.CLAUDE_API_KEY),
+            ('GIGACHAT_CLIENT_ID', cls.GIGACHAT_CLIENT_ID),
+            ('GIGACHAT_CLIENT_SECRET', cls.GIGACHAT_CLIENT_SECRET),
         ]
         
         missing = [name for name, value in required if not value]
