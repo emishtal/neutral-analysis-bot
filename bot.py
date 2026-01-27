@@ -97,36 +97,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     
-    # Подтверждение данных
-    elif query.data == "confirm_data_yes":
-        set_user_state(user_id, ConversationState.CHOOSING_BASIC_TARIFF)
-        
-        keyboard = [[InlineKeyboardButton("💳 49₽ - Разбор для себя", callback_data="pay_basic")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.reply_text(
-            "💳 **Выбери тариф:**\n\n"
-            "🔹 **РАЗБОР ДЛЯ СЕБЯ — 49₽**\n"
-            "Ты выйдешь с ясной картиной:\n"
-            "• Что произошло (факты vs эмоции)\n"
-            "• Где именно застрял конфликт\n"
-            "• Что не хватает для понимания\n\n"
-            "⏳ После оплаты разбор готовится 1-2 минуты.",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-    
-    elif query.data == "confirm_data_no":
-        set_user_state(user_id, ConversationState.ASKING_Q1_SITUATION)
-        await query.message.reply_text(
-            "Хорошо, давай пройдём вопросы заново.\n\n"
-            "📝 **Вопрос 1/8**\n\n"
-            "Опиши ситуацию кратко, без оценок.\n"
-            "2–3 предложения.\n\n"
-            "👉 **Что произошло фактически?**",
-            parse_mode='Markdown'
-        )
-    
     # Оплата базового тарифа (49₽)
     elif query.data == "pay_basic":
         await process_basic_analysis(query, user_id)
@@ -153,20 +123,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_extended_analysis(query, user_id)
     
     elif query.data == "skip_upgrade":
-        set_user_state(user_id, ConversationState.OFFERING_PERSONALIZATION)
-        await offer_personalization(query.message, user_id)
-    
-    # Персонализация
-    elif query.data == "add_personalization":
-        set_user_state(user_id, ConversationState.ASKING_NAME)
-        await query.message.reply_text(
-            "📝 **Персонализация разбора**\n\n"
-            "Как тебя зовут?\n"
-            "_(Или напиши «пропустить»)_",
-            parse_mode='Markdown'
-        )
-    
-    elif query.data == "skip_personalization":
         await finalize_analysis(query.message, user_id)
 
 
@@ -269,10 +225,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     
-    # Вопрос 8: Что беспокоит
+    # Вопрос 8: Что беспокоит → СРАЗУ ПРЕДЛОЖИТЬ ТАРИФ
     elif state == ConversationState.ASKING_Q8_CONCERN:
         set_user_data(user_id, 'main_concern', text)
-        set_user_state(user_id, ConversationState.CONFIRMING_DATA)
+        set_user_state(user_id, ConversationState.CHOOSING_BASIC_TARIFF)
         
         # Сохранение в БД
         analysis_id = get_user_data(user_id, 'analysis_id')
@@ -288,22 +244,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             main_concern=text
         )
         
-        # Показать сводку
-        summary = f"""📋 **Итоговая сводка:**
-
-**Ситуация:** {get_user_data(user_id, 'situation')[:100]}...
-**Участники:** {get_user_data(user_id, 'participants')}
-**Договорённость:** {get_user_data(user_id, 'agreement_type')}
-
-Всё верно?"""
-        
-        keyboard = [
-            [InlineKeyboardButton("✅ Да, всё верно", callback_data="confirm_data_yes")],
-            [InlineKeyboardButton("✏️ Исправить", callback_data="confirm_data_no")]
-        ]
+        # СРАЗУ предложить тариф (БЕЗ подтверждения!)
+        keyboard = [[InlineKeyboardButton("💳 49₽ - Разбор для себя", callback_data="pay_basic")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(summary, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(
+            "✅ **Отлично! Все вопросы пройдены.**\n\n"
+            "💳 **Выбери тариф:**\n\n"
+            "🔹 **РАЗБОР ДЛЯ СЕБЯ — 49₽**\n"
+            "Ты получишь:\n"
+            "• Структурную причину конфликта\n"
+            "• Где именно застрял спор\n"
+            "• Что не было определено\n\n"
+            "⏳ Разбор готовится 1-2 минуты.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
     
     # Уточнение фактов
     elif state == ConversationState.ASKING_REFINEMENT:
@@ -311,44 +267,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Пересборка разбора с уточнёнными фактами
         await regenerate_basic_analysis(update.message, user_id)
-    
-    # Ввод имени
-    elif state == ConversationState.ASKING_NAME:
-        if text.lower() != 'пропустить':
-            set_user_data(user_id, 'user_name', text)
-        
-        set_user_state(user_id, ConversationState.ASKING_AGE)
-        await update.message.reply_text(
-            "Сколько тебе лет?\n"
-            "_(Или напиши «пропустить»)_"
-        )
-    
-    # Ввод возраста
-    elif state == ConversationState.ASKING_AGE:
-        if text.lower() != 'пропустить':
-            try:
-                age = int(text)
-                set_user_data(user_id, 'user_age', age)
-            except ValueError:
-                pass
-        
-        set_user_state(user_id, ConversationState.ASKING_GENDER)
-        
-        keyboard = [
-            [InlineKeyboardButton("Мужской", callback_data="gender_male")],
-            [InlineKeyboardButton("Женский", callback_data="gender_female")],
-            [InlineKeyboardButton("Не важно", callback_data="gender_skip")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            "Твой пол?",
-            reply_markup=reply_markup
-        )
 
-
-# Продолжение следует в части 2...
-# Продолжение bot.py - вспомогательные функции
 
 async def process_basic_analysis(query, user_id):
     """Обработка базового анализа (49₽)"""
@@ -470,8 +389,8 @@ async def offer_upgrade(message, user_id):
         "🔸 **ПРОТОКОЛ + ШАГИ — 99₽** (+50₽ к базовому)\n\n"
         "Всё из базового тарифа, ПЛЮС:\n"
         "• **Нейтральный текст для передачи** другой стороне\n"
-        "• **Варианты действий** (от мягких к жёстким)\n"
-        "• **Карта возможных ходов**\n\n"
+        "• **Структурные точки конфликта**\n"
+        "• **Карта что не было определено**\n\n"
         "Хочешь апгрейд?",
         reply_markup=reply_markup,
         parse_mode='Markdown'
@@ -486,7 +405,7 @@ async def process_extended_analysis(query, user_id):
     analysis_id = get_user_data(user_id, 'analysis_id')
     db.create_payment(user_id, analysis_id, 50, 'extended')  # доплата 50₽
     
-    # Генерация промпта
+    # Генерация промпта (БЕЗ персонализации)
     prompt = get_extended_prompt(
         situation=get_user_data(user_id, 'situation'),
         participants=get_user_data(user_id, 'participants'),
@@ -496,10 +415,7 @@ async def process_extended_analysis(query, user_id):
         what_happened=get_user_data(user_id, 'what_happened'),
         evidence=get_user_data(user_id, 'evidence'),
         main_concern=get_user_data(user_id, 'main_concern'),
-        refinement_text=get_user_data(user_id, 'refinement_text'),
-        user_name=get_user_data(user_id, 'user_name'),
-        user_age=get_user_data(user_id, 'user_age'),
-        user_gender=get_user_data(user_id, 'user_gender')
+        refinement_text=get_user_data(user_id, 'refinement_text')
     )
     
     # Получение анализа
@@ -511,9 +427,8 @@ async def process_extended_analysis(query, user_id):
         
         await query.message.reply_text(f"✅ **Расширенный анализ готов!**\n\n{analysis}", parse_mode='Markdown')
         
-        # Предложение персонализации
-        set_user_state(user_id, ConversationState.OFFERING_PERSONALIZATION)
-        await offer_personalization(query.message, user_id)
+        # Завершение (БЕЗ персонализации)
+        await finalize_analysis(query.message, user_id)
         
     except Exception as e:
         logger.error(f"Error getting extended analysis: {e}")
@@ -522,29 +437,6 @@ async def process_extended_analysis(query, user_id):
             f"Попробуй ещё раз или обратись к @{ADMIN_USERNAME}",
             parse_mode='Markdown'
         )
-
-
-async def offer_personalization(message, user_id):
-    """Предложение добавить персонализацию"""
-    # Проверка - если уже есть персонализация, пропустить
-    if get_user_data(user_id, 'user_name'):
-        await finalize_analysis(message, user_id)
-        return
-    
-    keyboard = [
-        [InlineKeyboardButton("✅ Да, добавить", callback_data="add_personalization")],
-        [InlineKeyboardButton("Не нужно", callback_data="skip_personalization")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await message.reply_text(
-        "📝 **Персонализировать протокол?**\n\n"
-        "Ты можешь указать своё имя, возраст и пол,\n"
-        "чтобы протокол выглядел более естественно.\n\n"
-        "_Это опционально и бесплатно._",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
 
 
 async def finalize_analysis(message, user_id):
@@ -591,29 +483,6 @@ async def button_agreement_handler(update: Update, context: ContextTypes.DEFAULT
             "_(если условий не было — так и напиши)_",
             parse_mode='Markdown'
         )
-    
-    # Обработка пола
-    elif query.data.startswith('gender_'):
-        gender_map = {
-            'gender_male': 'Мужской',
-            'gender_female': 'Женский',
-            'gender_skip': None
-        }
-        
-        gender = gender_map.get(query.data)
-        if gender:
-            set_user_data(user_id, 'user_gender', gender)
-        
-        # Сохранение персонализации в БД
-        analysis_id = get_user_data(user_id, 'analysis_id')
-        db.update_analysis(
-            analysis_id,
-            user_name=get_user_data(user_id, 'user_name'),
-            user_age=get_user_data(user_id, 'user_age'),
-            user_gender=get_user_data(user_id, 'user_gender')
-        )
-        
-        await finalize_analysis(query.message, user_id)
 
 
 def main():
@@ -626,11 +495,11 @@ def main():
     
     # Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_agreement_handler, pattern="^(agreement_|gender_)"))
+    application.add_handler(CallbackQueryHandler(button_agreement_handler, pattern="^agreement_"))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
-    logger.info("Bot started with GigaChat API v2.1")
+    logger.info("Bot started with GigaChat API v2.3")
     application.run_polling()
 
 
