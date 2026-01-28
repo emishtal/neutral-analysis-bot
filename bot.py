@@ -17,7 +17,7 @@ from states import (
     get_user_data, set_user_data, clear_user_data
 )
 from gigachat_api import GigaChatAPI
-from prompts import get_basic_prompt, get_extended_prompt
+from prompts import get_basic_prompt, get_extended_prompt, get_extended_audit_prompt
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -301,6 +301,7 @@ async def process_basic_analysis(query, user_id):
         # Сохранение результата
         db.update_analysis(analysis_id, initial_analysis=analysis, tariff='basic')
         set_user_data(user_id, 'initial_analysis', analysis)
+        set_user_data(user_id, 'basic_analysis', analysis)  # НОВОЕ: сохраняем для расширенного
         
         # Отправка результата
         await query.message.reply_text(f"✅ **Анализ готов!**\n\n{analysis}", parse_mode='Markdown')
@@ -347,6 +348,7 @@ async def regenerate_basic_analysis(message, user_id):
         # Сохранение
         db.update_analysis(analysis_id, initial_analysis=analysis)
         set_user_data(user_id, 'initial_analysis', analysis)
+        set_user_data(user_id, 'basic_analysis', analysis)  # НОВОЕ: обновляем для расширенного
         
         await message.reply_text(f"✅ **Обновлённый анализ готов!**\n\n{analysis}", parse_mode='Markdown')
         
@@ -403,15 +405,18 @@ async def offer_upgrade(message, user_id):
 
 
 async def process_extended_analysis(query, user_id):
-    """Обработка расширенного анализа (99₽)"""
+    """Обработка расширенного анализа (99₽) с аудитом v3.0"""
     await query.message.reply_text("⏳ **Генерирую расширенный разбор...**\n\nЭто займет 1-2 минуты.", parse_mode='Markdown')
     
     # Создание платежа
     analysis_id = get_user_data(user_id, 'analysis_id')
     db.create_payment(user_id, analysis_id, 50, 'extended')  # доплата 50₽
     
-    # Генерация промпта (БЕЗ персонализации)
-    prompt = get_extended_prompt(
+    # Получаем базовый анализ
+    basic_analysis = get_user_data(user_id, 'basic_analysis')
+    
+    # ШАГ 1: Генерация расширенного (v2.8)
+    extended_prompt = get_extended_prompt(
         situation=get_user_data(user_id, 'situation'),
         participants=get_user_data(user_id, 'participants'),
         agreement_type=get_user_data(user_id, 'agreement_type'),
@@ -420,19 +425,28 @@ async def process_extended_analysis(query, user_id):
         what_happened=get_user_data(user_id, 'what_happened'),
         evidence=get_user_data(user_id, 'evidence'),
         main_concern=get_user_data(user_id, 'main_concern'),
-        refinement_text=get_user_data(user_id, 'refinement_text')
+        refinement_text=get_user_data(user_id, 'refinement_text'),
+        basic_analysis=basic_analysis  # НОВОЕ!
     )
     
-    # Получение анализа
     try:
-        analysis = await gigachat.get_analysis(prompt, tariff="extended")
+        # Генерация черновика расширенного
+        extended_draft = await gigachat.get_analysis(extended_prompt, tariff="extended")
+        
+        # ШАГ 2: Аудит расширенного (v3.0) - НОВОЕ!
+        await query.message.reply_text("⏳ **Проверяю и улучшаю анализ...**", parse_mode='Markdown')
+        
+        audit_prompt = get_extended_audit_prompt(extended_draft)
+        
+        # Аудит черновика
+        extended_final = await gigachat.get_analysis(audit_prompt, tariff="extended")
         
         # Сохранение
-        db.update_analysis(analysis_id, final_analysis=analysis, tariff='extended')
+        db.update_analysis(analysis_id, final_analysis=extended_final, tariff='extended')
         
-        await query.message.reply_text(f"✅ **Расширенный анализ готов!**\n\n{analysis}", parse_mode='Markdown')
+        await query.message.reply_text(f"✅ **Расширенный анализ готов!**\n\n{extended_final}", parse_mode='Markdown')
         
-        # Завершение (БЕЗ персонализации)
+        # Завершение
         await finalize_analysis(query.message, user_id)
         
     except Exception as e:
@@ -504,7 +518,7 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
-    logger.info("Bot started with GigaChat API v2.6")
+    logger.info("Bot started with v2.8 + v3.0 audit")
     application.run_polling()
 
 
