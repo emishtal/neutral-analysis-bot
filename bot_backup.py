@@ -1,6 +1,5 @@
 import logging
 import os
-import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -11,7 +10,6 @@ from telegram.ext import (
     filters,
 )
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from database import Database
 from states import (
@@ -20,7 +18,6 @@ from states import (
 )
 from gigachat_api import GigaChatAPI
 from prompts import get_basic_prompt, get_extended_prompt, get_extended_audit_prompt
-from texts import WELCOME_TEXT, ONBOARDING_TEXT, PRIVACY_POLICY
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -50,22 +47,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_user_data(user.id)
     set_user_state(user.id, ConversationState.START)
     
-    # Новый welcome текст с политикой конфиденциальности
-    welcome_text = WELCOME_TEXT.format(first_name=user.first_name)
+    # ОБНОВЛЁННЫЙ ТЕКСТ v2.6
+    welcome_text = f"""Привет, {user.first_name}! 👋
+
+**Этот бот помогает понять, ГДЕ именно стороны по-разному понимали одну и ту же договорённость.**
+
+Он не ищет виноватых и не даёт советов, а показывает структурную причину, из-за которой разговор зашёл в тупик.
+
+⚠️ **Бот подходит, если:**
+✅ Между вами было какое-то ожидание или договорённость
+✅ Вы спорите о результате, границах или ответственности
+✅ Каждая сторона считает себя правой
+
+❌ **Не подходит для ситуаций:**
+❌ Где одна сторона имеет полную власть (руководство игнорирует всё)
+❌ Где вы хотите узнать "кто прав"
+❌ Где договорённости вообще не было
+
+**Как это работает:**
+
+1️⃣ Ты отвечаешь на 8 вопросов о ситуации
+2️⃣ Получаешь **структурный разбор** за 49₽
+3️⃣ Можешь **бесплатно уточнить факты** (1 раз)
+4️⃣ При желании — **расширенный анализ** за 99₽
+
+**Чем подробнее опишешь — тем точнее результат!**
+
+Готов начать?"""
     
-    keyboard = [
-        [InlineKeyboardButton("🚀 Начать разбор", callback_data="start_analysis")],
-        [InlineKeyboardButton("🔒 Конфиденциальность", callback_data="show_privacy")]
-    ]
+    keyboard = [[InlineKeyboardButton("🚀 Начать разбор", callback_data="start_analysis")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
-
-
-async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /privacy - показать политику конфиденциальности"""
-    privacy_text = PRIVACY_POLICY.replace('{ADMIN_USERNAME}', ADMIN_USERNAME)
-    await update.message.reply_text(privacy_text, parse_mode='Markdown')
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -75,34 +88,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = query.from_user.id
     
-    # Начало разбора - ОБНОВЛЕНО с онбордингом
+    # Начало разбора
     if query.data == "start_analysis":
         set_user_state(user_id, ConversationState.ASKING_Q1_SITUATION)
         set_user_data(user_id, 'analysis_id', db.create_analysis(user_id))
         
-        # Показываем онбординг перед первым вопросом
-        await query.message.reply_text(ONBOARDING_TEXT, parse_mode='Markdown')
-    
-    # НОВОЕ: Показать политику конфиденциальности
-    elif query.data == "show_privacy":
-        privacy_text = PRIVACY_POLICY.replace('{ADMIN_USERNAME}', ADMIN_USERNAME)
-        
-        keyboard = [[InlineKeyboardButton("« Назад к началу", callback_data="back_to_start")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.reply_text(privacy_text, reply_markup=reply_markup, parse_mode='Markdown')
-    
-    # НОВОЕ: Вернуться к началу
-    elif query.data == "back_to_start":
-        welcome_text = WELCOME_TEXT.format(first_name=query.from_user.first_name)
-        
-        keyboard = [
-            [InlineKeyboardButton("🚀 Начать разбор", callback_data="start_analysis")],
-            [InlineKeyboardButton("🔒 Конфиденциальность", callback_data="show_privacy")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.message.reply_text(
+            "📝 **Вопрос 1/8**\n\n"
+            "Опиши ситуацию кратко, без оценок.\n"
+            "2–3 предложения.\n\n"
+            "👉 **Что произошло фактически?**\n\n"
+            "_Не пиши, кто плохой. Пиши, что случилось._",
+            parse_mode='Markdown'
+        )
     
     # Оплата базового тарифа (49₽)
     elif query.data == "pay_basic":
@@ -214,7 +212,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• скриншоты\n"
             "• свидетели\n"
             "• ничего нет\n\n"
-            "_Просто опиши, что есть._",
+            "_(достаточно описать словами)_",
             parse_mode='Markdown'
         )
     
@@ -224,21 +222,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         set_user_state(user_id, ConversationState.ASKING_Q8_CONCERN)
         
         await update.message.reply_text(
-            "📝 **Вопрос 8/8** (последний!)\n\n"
-            "Что беспокоит тебя больше всего в этой ситуации?\n\n"
-            "👉 Одним предложением:\n"
-            "• потеря контроля?\n"
-            "• непонимание?\n"
-            "• несправедливость?\n"
-            "• что-то ещё?",
+            "📝 **Вопрос 8/8** _(последний!)_\n\n"
+            "Что тебя больше всего беспокоит в этой ситуации?\n\n"
+            "👉 Не обвиняй.\n"
+            "👉 Напиши, что именно для тебя критично.\n\n"
+            "_(например: сроки, доверие, повторяемость, последствия)_",
             parse_mode='Markdown'
         )
     
-    # Вопрос 8: Главная озабоченность
+    # Вопрос 8: Что беспокоит → СРАЗУ ПРЕДЛОЖИТЬ ТАРИФ
     elif state == ConversationState.ASKING_Q8_CONCERN:
         set_user_data(user_id, 'main_concern', text)
+        set_user_state(user_id, ConversationState.CHOOSING_BASIC_TARIFF)
         
-        # Сохранение всех данных в БД
+        # Сохранение в БД
         analysis_id = get_user_data(user_id, 'analysis_id')
         db.update_analysis(
             analysis_id,
@@ -252,19 +249,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             main_concern=text
         )
         
-        # Переход к оплате
-        set_user_state(user_id, ConversationState.WAITING_PAYMENT)
-        
-        keyboard = [[InlineKeyboardButton("💳 Оплатить 49₽", callback_data="pay_basic")]]
+        # СРАЗУ предложить тариф (БЕЗ подтверждения!)
+        keyboard = [[InlineKeyboardButton("💳 49₽ - Разбор для себя", callback_data="pay_basic")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            "✅ **Все вопросы пройдены!**\n\n"
-            "Сейчас я соберу структурный разбор:\n"
-            "• Где именно произошёл сбой\n"
-            "• Почему обе стороны считают себя правыми\n"
-            "• Что было понято по-разному\n\n"
-            "💰 **Стоимость: 49₽**",
+            "✅ **Отлично! Все вопросы пройдены.**\n\n"
+            "💳 **Выбери тариф:**\n\n"
+            "🔹 **РАЗБОР ДЛЯ СЕБЯ — 49₽**\n"
+            "Ты получишь:\n"
+            "• Структурную причину конфликта\n"
+            "• Где именно застрял спор\n"
+            "• Что не было определено\n\n"
+            "⏳ Разбор готовится 1-2 минуты.",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
@@ -272,14 +269,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Уточнение фактов
     elif state == ConversationState.ASKING_REFINEMENT:
         set_user_data(user_id, 'refinement_text', text)
+        
+        # Пересборка разбора с уточнёнными фактами
         await regenerate_basic_analysis(update.message, user_id)
 
 
 async def process_basic_analysis(query, user_id):
     """Обработка базового анализа (49₽)"""
-    await query.message.reply_text("⏳ **Генерирую базовый разбор...**\n\nПодожди 1-2 минуты.", parse_mode='Markdown')
+    await query.message.reply_text("⏳ **Генерирую нейтральный разбор...**\n\nЭто займет 1-2 минуты.", parse_mode='Markdown')
     
-    # Создание платежа
+    # Создание платежа (пока заглушка)
     analysis_id = get_user_data(user_id, 'analysis_id')
     db.create_payment(user_id, analysis_id, 49, 'basic')
     
@@ -295,15 +294,16 @@ async def process_basic_analysis(query, user_id):
         main_concern=get_user_data(user_id, 'main_concern')
     )
     
-    # Получение анализа
+    # Получение анализа от GigaChat
     try:
         analysis = await gigachat.get_analysis(prompt, tariff="basic")
         
-        # Сохранение
+        # Сохранение результата
         db.update_analysis(analysis_id, initial_analysis=analysis, tariff='basic')
         set_user_data(user_id, 'initial_analysis', analysis)
-        set_user_data(user_id, 'basic_analysis', analysis)  # Для расширенного
+        set_user_data(user_id, 'basic_analysis', analysis)  # НОВОЕ: сохраняем для расширенного
         
+        # Отправка результата
         await query.message.reply_text(f"✅ **Анализ готов!**\n\n{analysis}", parse_mode='Markdown')
         
         # Предложение уточнить факты
@@ -348,7 +348,7 @@ async def regenerate_basic_analysis(message, user_id):
         # Сохранение
         db.update_analysis(analysis_id, initial_analysis=analysis)
         set_user_data(user_id, 'initial_analysis', analysis)
-        set_user_data(user_id, 'basic_analysis', analysis)
+        set_user_data(user_id, 'basic_analysis', analysis)  # НОВОЕ: обновляем для расширенного
         
         await message.reply_text(f"✅ **Обновлённый анализ готов!**\n\n{analysis}", parse_mode='Markdown')
         
@@ -387,19 +387,17 @@ async def offer_refinement(message, user_id):
 async def offer_upgrade(message, user_id):
     """Предложение апгрейда до расширенного тарифа"""
     keyboard = [
-        [InlineKeyboardButton("💳 99₽ - Расширенный разбор", callback_data="pay_extended")],
+        [InlineKeyboardButton("💳 99₽ - Протокол + шаги", callback_data="pay_extended")],
         [InlineKeyboardButton("Нет, спасибо", callback_data="skip_upgrade")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await message.reply_text(
-        "🔸 **РАСШИРЕННЫЙ РАЗБОР — 99₽** (+50₽ к базовому)\n\n"
+        "🔸 **ПРОТОКОЛ + ШАГИ — 99₽** (+50₽ к базовому)\n\n"
         "Всё из базового тарифа, ПЛЮС:\n"
-        "• **Тип конфликта и механизм**\n"
-        "• **Где произошёл структурный сбой**\n"
-        "• **Почему обе стороны чувствуют себя правыми**\n"
-        "• **Структурные границы конфликта**\n"
-        "• **Возможные пути выхода**\n\n"
+        "• **Нейтральный текст для передачи** другой стороне\n"
+        "• **Структурные точки конфликта**\n"
+        "• **Карта что не было определено**\n\n"
         "Хочешь апгрейд?",
         reply_markup=reply_markup,
         parse_mode='Markdown'
@@ -407,7 +405,7 @@ async def offer_upgrade(message, user_id):
 
 
 async def process_extended_analysis(query, user_id):
-    """Обработка расширенного анализа (99₽) с аудитом v3.2.1"""
+    """Обработка расширенного анализа (99₽) с аудитом v3.0"""
     await query.message.reply_text("⏳ **Генерирую расширенный разбор...**\n\nЭто займет 1-2 минуты.", parse_mode='Markdown')
     
     # Создание платежа
@@ -417,7 +415,7 @@ async def process_extended_analysis(query, user_id):
     # Получаем базовый анализ
     basic_analysis = get_user_data(user_id, 'basic_analysis')
     
-    # ШАГ 1: Генерация расширенного (v3.2.1)
+    # ШАГ 1: Генерация расширенного (v2.8)
     extended_prompt = get_extended_prompt(
         situation=get_user_data(user_id, 'situation'),
         participants=get_user_data(user_id, 'participants'),
@@ -428,14 +426,14 @@ async def process_extended_analysis(query, user_id):
         evidence=get_user_data(user_id, 'evidence'),
         main_concern=get_user_data(user_id, 'main_concern'),
         refinement_text=get_user_data(user_id, 'refinement_text'),
-        basic_analysis=basic_analysis
+        basic_analysis=basic_analysis  # НОВОЕ!
     )
     
     try:
         # Генерация черновика расширенного
         extended_draft = await gigachat.get_analysis(extended_prompt, tariff="extended")
         
-        # ШАГ 2: Аудит расширенного (v3.2.1)
+        # ШАГ 2: Аудит расширенного (v3.0) - НОВОЕ!
         await query.message.reply_text("⏳ **Проверяю и улучшаю анализ...**", parse_mode='Markdown')
         
         audit_prompt = get_extended_audit_prompt(extended_draft)
@@ -461,58 +459,18 @@ async def process_extended_analysis(query, user_id):
 
 
 async def finalize_analysis(message, user_id):
-    """Завершение анализа с автоанонимизацией"""
+    """Завершение анализа"""
     set_user_state(user_id, ConversationState.COMPLETED)
     
     stats = db.get_user_stats(user_id)
-    analysis_id = get_user_data(user_id, 'analysis_id')
-    
-    # НОВОЕ: Запускаем анонимизацию в фоне через 1 минуту
-    asyncio.create_task(anonymize_after_delay(analysis_id, delay=60))
     
     await message.reply_text(
         f"🎉 **Готово!**\n\n"
         f"Ты прошёл **{stats['total_analyses']}** разбор(ов).\n\n"
         f"Если возникнут вопросы — пиши @{ADMIN_USERNAME}\n\n"
-        f"Чтобы начать новый разбор, нажми /start\n\n"
-        f"_🔒 Через 7 дней твои личные данные будут автоматически удалены._",
+        f"Чтобы начать новый разбор, нажми /start",
         parse_mode='Markdown'
     )
-
-
-async def anonymize_after_delay(analysis_id, delay=60):
-    """
-    Анонимизирует анализ через указанное время
-    
-    Args:
-        analysis_id: ID анализа
-        delay: Задержка в секундах (по умолчанию 60)
-    """
-    # Ждём
-    await asyncio.sleep(delay)
-    
-    try:
-        # Анонимизируем
-        anon_id = db.anonymize_and_save(analysis_id)
-        
-        if anon_id:
-            logger.info(f"Analysis {analysis_id} anonymized as {anon_id}")
-        else:
-            logger.warning(f"Failed to anonymize analysis {analysis_id}")
-    except Exception as e:
-        logger.error(f"Error anonymizing analysis {analysis_id}: {e}")
-
-
-async def cleanup_old_data():
-    """
-    Фоновая задача: удаляет личные данные старше 7 дней
-    Запускается каждую ночь в 3:00
-    """
-    try:
-        deleted_count = db.cleanup_old_analyses(days=7)
-        logger.info(f"Cleanup: deleted {deleted_count} old analyses")
-    except Exception as e:
-        logger.error(f"Error in cleanup: {e}")
 
 
 # Обработчики для кнопок с типом договорённости
@@ -554,24 +512,13 @@ def main():
     
     application = Application.builder().token(token).build()
     
-    # НОВОЕ: Планировщик для автоочистки данных
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        cleanup_old_data,
-        'cron',
-        hour=3,  # Каждую ночь в 3:00
-        minute=0
-    )
-    scheduler.start()
-    
     # Handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("privacy", privacy_command))  # НОВОЕ
     application.add_handler(CallbackQueryHandler(button_agreement_handler, pattern="^agreement_"))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
-    logger.info("Bot started with v3.2.1 + Privacy")
+    logger.info("Bot started with v2.8 + v3.0 audit")
     application.run_polling()
 
 

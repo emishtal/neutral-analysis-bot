@@ -1,183 +1,313 @@
-import sqlite3
-import logging
-from datetime import datetime
-from typing import Optional, Dict, Any
+"""
+Database module с поддержкой анонимизации
+Добавлена таблица anonymized_analyses для обезличенных данных
+"""
 
-logger = logging.getLogger(__name__)
+import sqlite3
+import json
+from datetime import datetime, timedelta
+from anonymizer import create_anonymized_record
+
 
 class Database:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path):
         self.db_path = db_path
-        self.init_db()
+        self.init_database()
     
-    def init_db(self):
+    def init_database(self):
         """Инициализация базы данных"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            # Таблица пользователей
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Таблица разборов ситуаций
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS analyses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    
-                    -- 8 вопросов
-                    situation TEXT,
-                    participants TEXT,
-                    agreement_type TEXT,
-                    agreement_details TEXT,
-                    completion_criteria TEXT,
-                    what_happened TEXT,
-                    evidence TEXT,
-                    main_concern TEXT,
-                    
-                    -- Персонализация (опционально)
-                    user_name TEXT,
-                    user_age INTEGER,
-                    user_gender TEXT,
-                    
-                    -- Уточнение фактов
-                    facts_updated BOOLEAN DEFAULT 0,
-                    refinement_text TEXT,
-                    
-                    -- Результаты
-                    tariff TEXT,
-                    initial_analysis TEXT,
-                    final_analysis TEXT,
-                    
-                    -- Метаданные
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
-                )
-            ''')
-            
-            # Таблица платежей (для будущей интеграции с ЮKassa)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS payments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    analysis_id INTEGER,
-                    amount INTEGER NOT NULL,
-                    tariff TEXT NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    
-                    FOREIGN KEY (user_id) REFERENCES users (user_id),
-                    FOREIGN KEY (analysis_id) REFERENCES analyses (id)
-                )
-            ''')
-            
-            conn.commit()
-            logger.info("Database initialized successfully")
-    
-    def create_user(self, user_id: int, username: str = None, first_name: str = None):
-        """Создать или обновить пользователя"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO users (user_id, username, first_name)
-                VALUES (?, ?, ?)
-            ''', (user_id, username, first_name))
-            conn.commit()
-    
-    def create_analysis(self, user_id: int) -> int:
-        """Создать новый разбор ситуации"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO analyses (user_id)
-                VALUES (?)
-            ''', (user_id,))
-            conn.commit()
-            return cursor.lastrowid
-    
-    def update_analysis(self, analysis_id: int, **kwargs):
-        """Обновить данные разбора"""
-        if not kwargs:
-            return
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
-        # Всегда обновляем updated_at
-        kwargs['updated_at'] = datetime.now().isoformat()
+        # Таблица пользователей
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY,
+                telegram_id INTEGER UNIQUE NOT NULL,
+                username TEXT,
+                first_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         
-        fields = ', '.join([f"{k} = ?" for k in kwargs.keys()])
-        values = list(kwargs.values()) + [analysis_id]
+        # Таблица анализов (исходные данные - удаляются через 7 дней)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                situation TEXT,
+                participants TEXT,
+                agreement_type TEXT,
+                agreement_details TEXT,
+                completion_criteria TEXT,
+                what_happened TEXT,
+                evidence TEXT,
+                main_concern TEXT,
+                refinement_text TEXT,
+                initial_analysis TEXT,
+                final_analysis TEXT,
+                tariff TEXT DEFAULT 'basic',
+                facts_updated BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                anonymized_at TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        ''')
         
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(f'''
-                UPDATE analyses
-                SET {fields}
-                WHERE id = ?
-            ''', values)
-            conn.commit()
+        # НОВАЯ ТАБЛИЦА: Анонимизированные анализы (хранятся вечно)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS anonymized_analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_month TEXT NOT NULL,
+                conflict_type TEXT,
+                key_word TEXT,
+                situation_template TEXT,
+                tariff TEXT,
+                quality_metrics TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Таблица платежей
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                analysis_id INTEGER,
+                amount INTEGER NOT NULL,
+                tariff TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (analysis_id) REFERENCES analyses(id)
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
     
-    def get_analysis(self, analysis_id: int) -> Optional[Dict[str, Any]]:
-        """Получить данные разбора"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT * FROM analyses WHERE id = ?
-            ''', (analysis_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
+    # ... (все остальные методы остаются без изменений)
     
-    def get_latest_analysis(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Получить последний разбор пользователя"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT * FROM analyses 
-                WHERE user_id = ? 
-                ORDER BY created_at DESC 
-                LIMIT 1
-            ''', (user_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
+    def create_user(self, telegram_id, username=None, first_name=None):
+        """Создание или обновление пользователя"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT OR REPLACE INTO users (telegram_id, username, first_name)
+            VALUES (?, ?, ?)
+        ''', (telegram_id, username, first_name))
+        
+        conn.commit()
+        conn.close()
     
-    def create_payment(self, user_id: int, analysis_id: int, amount: int, tariff: str) -> int:
-        """Создать запись о платеже (для будущей интеграции)"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO payments (user_id, analysis_id, amount, tariff, status)
-                VALUES (?, ?, ?, ?, 'completed')
-            ''', (user_id, analysis_id, amount, tariff))
-            conn.commit()
-            return cursor.lastrowid
+    def create_analysis(self, user_id):
+        """Создание нового анализа"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO analyses (user_id) VALUES (?)
+        ''', (user_id,))
+        
+        analysis_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        return analysis_id
     
-    def get_user_stats(self, user_id: int) -> Dict[str, Any]:
-        """Получить статистику пользователя"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            # Количество разборов
-            cursor.execute('''
-                SELECT COUNT(*) FROM analyses WHERE user_id = ?
-            ''', (user_id,))
-            total_analyses = cursor.fetchone()[0]
-            
-            # Сумма платежей
-            cursor.execute('''
-                SELECT SUM(amount) FROM payments 
-                WHERE user_id = ? AND status = 'completed'
-            ''', (user_id,))
-            total_spent = cursor.fetchone()[0] or 0
-            
-            return {
-                'total_analyses': total_analyses,
-                'total_spent': total_spent
-            }
+    def update_analysis(self, analysis_id, **kwargs):
+        """Обновление анализа"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Формируем SET часть запроса
+        set_parts = []
+        values = []
+        
+        for key, value in kwargs.items():
+            set_parts.append(f"{key} = ?")
+            values.append(value)
+        
+        set_parts.append("updated_at = CURRENT_TIMESTAMP")
+        
+        query = f"UPDATE analyses SET {', '.join(set_parts)} WHERE id = ?"
+        values.append(analysis_id)
+        
+        cursor.execute(query, values)
+        conn.commit()
+        conn.close()
+    
+    def get_analysis(self, analysis_id):
+        """Получение анализа по ID"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM analyses WHERE id = ?', (analysis_id,))
+        row = cursor.fetchone()
+        
+        conn.close()
+        
+        if row:
+            return dict(row)
+        return None
+    
+    def create_payment(self, user_id, analysis_id, amount, tariff):
+        """Создание записи о платеже"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO payments (user_id, analysis_id, amount, tariff)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, analysis_id, amount, tariff))
+        
+        conn.commit()
+        conn.close()
+    
+    def get_user_stats(self, user_id):
+        """Получение статистики пользователя"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT COUNT(*) as total_analyses
+            FROM analyses
+            WHERE user_id = ?
+        ''', (user_id,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        return {
+            'total_analyses': result[0] if result else 0
+        }
+    
+    # НОВЫЕ МЕТОДЫ ДЛЯ АНОНИМИЗАЦИИ
+    
+    def anonymize_and_save(self, analysis_id):
+        """
+        Создаёт анонимную версию анализа и сохраняет её
+        
+        Args:
+            analysis_id: ID анализа для обезличивания
+        
+        Returns:
+            ID созданной анонимной записи или None
+        """
+        # Получаем оригинальный анализ
+        analysis = self.get_analysis(analysis_id)
+        
+        if not analysis:
+            return None
+        
+        # Создаём анонимную запись
+        anon_data = create_anonymized_record(analysis)
+        
+        # Сохраняем в БД
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO anonymized_analyses 
+            (created_month, conflict_type, key_word, situation_template, tariff, quality_metrics)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            anon_data['created_month'],
+            anon_data['conflict_type'],
+            anon_data['key_word'],
+            anon_data['situation_template'],
+            anon_data['tariff'],
+            json.dumps(anon_data['quality_metrics'])
+        ))
+        
+        anon_id = cursor.lastrowid
+        
+        # Помечаем оригинал как обезличенный
+        cursor.execute('''
+            UPDATE analyses 
+            SET anonymized_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (analysis_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return anon_id
+    
+    def cleanup_old_analyses(self, days=7):
+        """
+        Удаляет анализы старше указанного количества дней
+        (только если они уже обезличены)
+        
+        Args:
+            days: Количество дней
+        
+        Returns:
+            Количество удалённых записей
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cutoff_date = datetime.now() - timedelta(days=days)
+        
+        # Удаляем только обезличенные анализы
+        cursor.execute('''
+            DELETE FROM analyses 
+            WHERE created_at < ? 
+            AND anonymized_at IS NOT NULL
+        ''', (cutoff_date,))
+        
+        deleted_count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        return deleted_count
+    
+    def get_anonymized_stats(self):
+        """Получение статистики по анонимным данным"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Общее количество
+        cursor.execute('SELECT COUNT(*) FROM anonymized_analyses')
+        total = cursor.fetchone()[0]
+        
+        # По типам конфликтов
+        cursor.execute('''
+            SELECT conflict_type, COUNT(*) as count
+            FROM anonymized_analyses
+            GROUP BY conflict_type
+            ORDER BY count DESC
+        ''')
+        by_type = cursor.fetchall()
+        
+        # По месяцам
+        cursor.execute('''
+            SELECT created_month, COUNT(*) as count
+            FROM anonymized_analyses
+            GROUP BY created_month
+            ORDER BY created_month DESC
+            LIMIT 12
+        ''')
+        by_month = cursor.fetchall()
+        
+        # По тарифам
+        cursor.execute('''
+            SELECT tariff, COUNT(*) as count
+            FROM anonymized_analyses
+            GROUP BY tariff
+        ''')
+        by_tariff = cursor.fetchall()
+        
+        conn.close()
+        
+        return {
+            'total': total,
+            'by_type': dict(by_type),
+            'by_month': dict(by_month),
+            'by_tariff': dict(by_tariff)
+        }
